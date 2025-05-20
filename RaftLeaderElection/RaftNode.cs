@@ -1,18 +1,23 @@
-﻿namespace RaftLeaderElection;
+﻿using System.Collections.Concurrent;
 
-public class RaftNode(string id, List<RaftNode> allNodes, CancellationToken token)
+namespace RaftLeaderElection;
+
+public class RaftNode(string id, ConcurrentDictionary<string, RaftNode> allNodes, CancellationToken token)
 {
     public string Id { get; } = id;
     public NodeState State { get; private set; } = NodeState.Follower;
     public int CurrentTerm { get; private set; } = 0;
 
-    private readonly List<RaftNode> _allNodes = allNodes;
-    private readonly Random _random = new();
+    // Thread-safe cluster node collection
+    private readonly ConcurrentDictionary<string, RaftNode> _allNodes = allNodes;
     private readonly CancellationToken _token = token;
     private readonly object _lock = new();
 
     private DateTime _lastHeartbeat = DateTime.UtcNow;
     private bool _isAlive = true;
+
+    // SemaphoreSlim for async-safe AddNode
+    private readonly SemaphoreSlim _addNodeLock = new(1, 1);
 
     public Task RunAsync() => Task.Run(async () =>
     {
@@ -25,7 +30,7 @@ public class RaftNode(string id, List<RaftNode> allNodes, CancellationToken toke
             }
             else
             {
-                await Task.Delay(_random.Next(1500, 3000)); // Simulate election timeout
+                await Task.Delay(Random.Shared.Next(1500, 3000)); // Simulate election timeout
 
                 if ((DateTime.UtcNow - _lastHeartbeat).TotalMilliseconds > 2000)
                 {
@@ -38,11 +43,12 @@ public class RaftNode(string id, List<RaftNode> allNodes, CancellationToken toke
 
     private async Task SendHeartbeats()
     {
-        foreach (var node in _allNodes.Where(n => n.Id != Id && n._isAlive))
+        foreach (var node in _allNodes.Values.Where(n => n.Id != Id && n._isAlive))
         {
             node.ReceiveHeartbeat(CurrentTerm, Id);
         }
         Console.WriteLine($"❤️ {Id} (leader) sent heartbeats.");
+        await Task.CompletedTask;
     }
 
     public void ReceiveHeartbeat(int term, string leaderId)
@@ -68,13 +74,13 @@ public class RaftNode(string id, List<RaftNode> allNodes, CancellationToken toke
             int votes = 1; // Vote for self
             Console.WriteLine($"{Id} started election for term {CurrentTerm}");
 
-            foreach (var node in _allNodes.Where(n => n.Id != Id && n._isAlive))
+            foreach (var node in _allNodes.Values.Where(n => n.Id != Id && n._isAlive))
             {
                 if (node.RequestVote(CurrentTerm))
                     votes++;
             }
 
-            if (votes > _allNodes.Count(n => n._isAlive) / 2)
+            if (votes > _allNodes.Values.Count(n => n._isAlive) / 2)
             {
                 State = NodeState.Leader;
                 Console.WriteLine($"✅ {Id} is elected leader for term {CurrentTerm} with {votes} votes.");
@@ -109,12 +115,20 @@ public class RaftNode(string id, List<RaftNode> allNodes, CancellationToken toke
         Console.WriteLine($"💀 {Id} has FAILED.");
     }
 
-    public void AddNode(RaftNode newNode)
+    // Async-safe AddNode method
+    public async Task AddNodeAsync(RaftNode newNode)
     {
-        lock (_lock)
+        await _addNodeLock.WaitAsync();
+        try
         {
-            _allNodes.Add(newNode);
-            Console.WriteLine($"🧩 {Id} acknowledged new node {newNode.Id}.");
+            if (_allNodes.TryAdd(newNode.Id, newNode))
+            {
+                Console.WriteLine($"🧩 {Id} acknowledged new node {newNode.Id}.");
+            }
+        }
+        finally
+        {
+            _addNodeLock.Release();
         }
     }
 }

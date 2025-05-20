@@ -1,15 +1,19 @@
 ﻿using RaftLeaderElection;
+using System.Collections.Concurrent;
 
 var cts = new CancellationTokenSource();
-var nodes = new List<RaftNode>();
+
+// Use ConcurrentDictionary for thread-safe node management
+var nodes = new ConcurrentDictionary<string, RaftNode>();
 
 // Initialize nodes
 for (int i = 1; i <= 3; i++)
 {
-    nodes.Add(new RaftNode($"Node-{i}", nodes, cts.Token));
+    var node = new RaftNode($"Node-{i}", nodes, cts.Token);
+    nodes.TryAdd(node.Id, node);
 }
 
-var tasks = nodes.Select(n => n.RunAsync()).ToList();
+var tasks = nodes.Values.Select(n => n.RunAsync()).ToList();
 
 Console.WriteLine("🚀 Cluster started with 3 nodes.");
 await Task.Delay(5000);
@@ -18,7 +22,7 @@ await Task.Delay(5000);
 for (int i = 4; i <= 5; i++)
 {
     var newNode = new RaftNode($"Node-{i}", nodes, cts.Token);
-    nodes.Add(newNode);
+    nodes.TryAdd(newNode.Id, newNode);
 
     Console.WriteLine($"➕ Node-{i} added to the cluster.");
 
@@ -30,7 +34,7 @@ Console.WriteLine("⏳ Running with new nodes. Simulating failure in 7s.");
 await Task.Delay(7000);
 
 // Simulate a leader failure
-var currentLeader = nodes.FirstOrDefault(n => n.State == NodeState.Leader);
+var currentLeader = nodes.Values.FirstOrDefault(n => n.State == NodeState.Leader);
 currentLeader?.SimulateFailure();
 
 // Let system recover
@@ -39,3 +43,4 @@ cts.Cancel();
 await Task.WhenAll(tasks);
 
 Console.WriteLine("Simulation ended.");
+
